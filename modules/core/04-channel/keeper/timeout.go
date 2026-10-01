@@ -88,31 +88,10 @@ func (k *Keeper) TimeoutPacket(
 		return "", errorsmod.Wrapf(types.ErrInvalidPacket, "packet commitment bytes are not equal: got (%v), expected (%v)", commitment, packetCommitment)
 	}
 
-	switch channel.Ordering {
-	case types.ORDERED:
-		// check that packet has not been received
-		if nextSequenceRecv > packet.GetSequence() {
-			return "", errorsmod.Wrapf(
-				types.ErrPacketReceived,
-				"packet already received, next sequence receive > packet sequence (%d > %d)", nextSequenceRecv, packet.GetSequence(),
-			)
-		}
-
-		// check that the recv sequence is as claimed
-		err = k.connectionKeeper.VerifyNextSequenceRecv(
-			ctx, connectionEnd, proofHeight, proof,
-			packet.GetDestPort(), packet.GetDestChannel(), nextSequenceRecv,
-		)
-	case types.UNORDERED:
-		err = k.connectionKeeper.VerifyPacketReceiptAbsence(
-			ctx, connectionEnd, proofHeight, proof,
-			packet.GetDestPort(), packet.GetDestChannel(), packet.GetSequence(),
-		)
-	default:
-		panic(errorsmod.Wrap(types.ErrInvalidChannelOrdering, channel.Ordering.String()))
-	}
-
-	if err != nil {
+	// verify that the packet has not been received on the counterparty. A
+	// failure here does not delete the packet commitment (see
+	// timeoutExecuted, which is only invoked on success).
+	if err := k.verifyTimeoutProof(ctx, channel, connectionEnd, packet, proof, proofHeight, nextSequenceRecv); err != nil {
 		return "", err
 	}
 
@@ -121,6 +100,136 @@ func (k *Keeper) TimeoutPacket(
 	}
 
 	return channel.Version, nil
+}
+
+// verifyTimeoutProof verifies that the packet has not been processed on the
+// counterparty chain, using the proof appropriate for the channel ordering:
+// next sequence receive for ORDERED channels and receipt absence for
+// UNORDERED channels. It performs no state changes. In particular, a proof
+// failure leaves the packet commitment untouched.
+func (k *Keeper) verifyTimeoutProof(
+	ctx sdk.Context,
+	channel types.Channel,
+	connectionEnd connectiontypes.ConnectionEnd,
+	packet types.Packet,
+	proof []byte,
+	proofHeight exported.Height,
+	nextSequenceRecv uint64,
+) error {
+	switch channel.Ordering {
+	case types.ORDERED:
+		// check that packet has not been received
+		if nextSequenceRecv > packet.GetSequence() {
+			return errorsmod.Wrapf(
+				types.ErrPacketReceived,
+				"packet already received, next sequence receive > packet sequence (%d > %d)", nextSequenceRecv, packet.GetSequence(),
+			)
+		}
+
+		// check that the recv sequence is as claimed
+		return k.connectionKeeper.VerifyNextSequenceRecv(
+			ctx, connectionEnd, proofHeight, proof,
+			packet.GetDestPort(), packet.GetDestChannel(), nextSequenceRecv,
+		)
+	case types.UNORDERED:
+		return k.connectionKeeper.VerifyPacketReceiptAbsence(
+			ctx, connectionEnd, proofHeight, proof,
+			packet.GetDestPort(), packet.GetDestChannel(), packet.GetSequence(),
+		)
+	default:
+		panic(errorsmod.Wrap(types.ErrInvalidChannelOrdering, channel.Ordering.String()))
+	}
+}
+
+// PacketTimeoutReason evaluates the timeout path for the given packet and
+// returns a queryable, fine-grained reason. It performs the same validation
+// and proof checks as TimeoutPacket, but it never mutates state and never
+// emits events, so it is safe to call from query handlers.
+//
+// The returned reason is one of:
+//   - types.TimeoutReasonHeight:    timeout height elapsed and proof valid;
+//   - types.TimeoutReasonTimestamp: timeout timestamp elapsed and proof valid;
+//   - types.TimeoutReasonProofInvalid: timeout elapsed but the proof failed
+//     verification (the packet commitment is retained on the write path);
+//   - types.TimeoutReasonUnspecified: the timeout has not elapsed.
+//
+// The returned error uses the same sentinel error codes as TimeoutPacket
+// (types.ErrTimeoutNotReached, types.ErrNoOpMsg, types.ErrInvalidPacket and
+// the underlying proof verification error) so callers can react identically
+// to either entry point.
+func (k *Keeper) PacketTimeoutReason(
+	ctx sdk.Context,
+	packet types.Packet,
+	proof []byte,
+	proofHeight exported.Height,
+	nextSequenceRecv uint64,
+) (types.TimeoutReason, error) {
+	channel, found := k.GetChannel(ctx, packet.GetSourcePort(), packet.GetSourceChannel())
+	if !found {
+		return types.TimeoutReasonUnspecified, errorsmod.Wrapf(
+			types.ErrChannelNotFound,
+			"port ID (%s) channel ID (%s)", packet.GetSourcePort(), packet.GetSourceChannel(),
+		)
+	}
+
+	if packet.GetDestPort() != channel.Counterparty.PortId {
+		return types.TimeoutReasonUnspecified, errorsmod.Wrapf(
+			types.ErrInvalidPacket,
+			"packet destination port doesn't match the counterparty's port (%s ≠ %s)", packet.GetDestPort(), channel.Counterparty.PortId,
+		)
+	}
+
+	if packet.GetDestChannel() != channel.Counterparty.ChannelId {
+		return types.TimeoutReasonUnspecified, errorsmod.Wrapf(
+			types.ErrInvalidPacket,
+			"packet destination channel doesn't match the counterparty's channel (%s ≠ %s)", packet.GetDestChannel(), channel.Counterparty.ChannelId,
+		)
+	}
+
+	connectionEnd, found := k.connectionKeeper.GetConnection(ctx, channel.ConnectionHops[0])
+	if !found {
+		return types.TimeoutReasonUnspecified, errorsmod.Wrap(
+			connectiontypes.ErrConnectionNotFound,
+			channel.ConnectionHops[0],
+		)
+	}
+
+	// check that timeout height or timeout timestamp has passed on the other end
+	proofTimestamp, err := k.clientKeeper.GetClientTimestampAtHeight(ctx, connectionEnd.ClientId, proofHeight)
+	if err != nil {
+		return types.TimeoutReasonUnspecified, err
+	}
+
+	timeout := types.NewTimeout(packet.GetTimeoutHeight().(clienttypes.Height), packet.GetTimeoutTimestamp())
+	proofHeightCasted := proofHeight.(clienttypes.Height)
+	if !timeout.Elapsed(proofHeightCasted, proofTimestamp) {
+		return types.TimeoutReasonUnspecified, errorsmod.Wrap(timeout.ErrTimeoutNotReached(proofHeightCasted, proofTimestamp), "packet timeout not reached")
+	}
+
+	reason := timeout.Reason(proofHeightCasted, proofTimestamp)
+
+	commitment := k.GetPacketCommitment(ctx, packet.GetSourcePort(), packet.GetSourceChannel(), packet.GetSequence())
+
+	if len(commitment) == 0 {
+		// The timeout already took effect (or the packet was never sent); the
+		// write path treats this as a no-op.
+		return reason, types.ErrNoOpMsg
+	}
+
+	packetCommitment := types.CommitPacket(packet)
+
+	// verify we sent the packet and haven't cleared it out yet
+	if !bytes.Equal(commitment, packetCommitment) {
+		return reason, errorsmod.Wrapf(types.ErrInvalidPacket, "packet commitment bytes are not equal: got (%v), expected (%v)", commitment, packetCommitment)
+	}
+
+	if err := k.verifyTimeoutProof(ctx, channel, connectionEnd, packet, proof, proofHeight, nextSequenceRecv); err != nil {
+		// The timeout elapsed, but the counterparty proof could not be
+		// verified. The commitment is retained on the write path.
+		return types.TimeoutReasonProofInvalid, err
+	}
+
+	return reason, nil
 }
 
 // timeoutExecuted deletes the commitment send from this chain after it verifies timeout.

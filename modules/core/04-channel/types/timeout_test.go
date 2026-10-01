@@ -193,6 +193,105 @@ func (s *TypesTestSuite) TestErrTimeoutElapsed() {
 	}
 }
 
+func (s *TypesTestSuite) TestReason() {
+	// elapsed is expected to be true when either timeout height or timestamp
+	// is greater than or equal to 2
+	var (
+		height    = clienttypes.NewHeight(0, 2)
+		timestamp = uint64(2)
+	)
+
+	testCases := []struct {
+		name      string
+		timeout   types.Timeout
+		expReason types.TimeoutReason
+	}{
+		{
+			"both timeout with height and timestamp: height takes precedence",
+			types.NewTimeout(height, timestamp),
+			types.TimeoutReasonHeight,
+		},
+		{
+			"timeout with height and zero timestamp",
+			types.NewTimeout(height, 0),
+			types.TimeoutReasonHeight,
+		},
+		{
+			"timeout with timestamp and zero height",
+			types.NewTimeout(clienttypes.ZeroHeight(), timestamp),
+			types.TimeoutReasonTimestamp,
+		},
+		{
+			"height elapsed, timestamp did not",
+			types.NewTimeout(height, timestamp+1),
+			types.TimeoutReasonHeight,
+		},
+		{
+			"timestamp elapsed, height did not",
+			types.NewTimeout(height.Increment().(clienttypes.Height), timestamp),
+			types.TimeoutReasonTimestamp,
+		},
+		{
+			"timestamp elapsed when less than current timestamp",
+			types.NewTimeout(clienttypes.ZeroHeight(), timestamp-1),
+			types.TimeoutReasonTimestamp,
+		},
+		{
+			"height elapsed when less than current height",
+			types.NewTimeout(clienttypes.NewHeight(0, 1), 0),
+			types.TimeoutReasonHeight,
+		},
+		{
+			"not elapsed: invalid timeout",
+			types.NewTimeout(clienttypes.ZeroHeight(), 0),
+			types.TimeoutReasonUnspecified,
+		},
+		{
+			"not elapsed: neither height nor timeout elapsed",
+			types.NewTimeout(height.Increment().(clienttypes.Height), timestamp+1),
+			types.TimeoutReasonUnspecified,
+		},
+		{
+			"not elapsed: timeout not reached with height and zero timestamp",
+			types.NewTimeout(height.Increment().(clienttypes.Height), 0),
+			types.TimeoutReasonUnspecified,
+		},
+		{
+			"not elapsed: timeout not reached with timestamp and zero height",
+			types.NewTimeout(clienttypes.ZeroHeight(), timestamp+1),
+			types.TimeoutReasonUnspecified,
+		},
+	}
+
+	for _, tc := range testCases {
+		s.Run(tc.name, func() {
+			reason := tc.timeout.Reason(height, timestamp)
+			s.Require().Equal(tc.expReason, reason)
+		})
+	}
+}
+
+func (s *TypesTestSuite) TestTimeoutReasonStringAndValid() {
+	testCases := []struct {
+		reason    types.TimeoutReason
+		expString string
+		expValid  bool
+	}{
+		{types.TimeoutReasonUnspecified, "TIMEOUT_REASON_UNSPECIFIED", false},
+		{types.TimeoutReasonHeight, "TIMEOUT_REASON_HEIGHT", true},
+		{types.TimeoutReasonTimestamp, "TIMEOUT_REASON_TIMESTAMP", true},
+		{types.TimeoutReasonProofInvalid, "TIMEOUT_REASON_PROOF_INVALID", true},
+		{types.TimeoutReason(99), "TIMEOUT_REASON_UNSPECIFIED", false},
+	}
+
+	for _, tc := range testCases {
+		s.Run(tc.expString, func() {
+			s.Require().Equal(tc.expString, tc.reason.String())
+			s.Require().Equal(tc.expValid, tc.reason.Valid())
+		})
+	}
+}
+
 func (s *TypesTestSuite) TestErrTimeoutNotReached() {
 	// elapsed is expected to be true when either timeout height or timestamp
 	// is greater than or equal to 2

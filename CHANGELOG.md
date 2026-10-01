@@ -44,6 +44,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ### Improvements
 
+* (core/04-channel) Add queryable packet timeout reason breakdown (`TimeoutReasonHeight`, `TimeoutReasonTimestamp`, `TimeoutReasonProofInvalid`) via `ChannelKeeper.PacketTimeoutReason`. The write path is unchanged: failed timeout proofs retain the packet commitment, and existing events and error codes are preserved.
 * (apps/rate-limiting) [\#8996](https://github.com/cosmos/ibc-go/pull/8996) Paginate the rate-limiting queries to avoid returning the full store contents in a single response.
 
 ### Dependencies
