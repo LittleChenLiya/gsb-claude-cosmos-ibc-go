@@ -3,7 +3,9 @@
 package keeper_test
 
 import (
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	errorsmod "cosmossdk.io/errors"
@@ -517,4 +519,117 @@ func (s *KeeperTestSuite) TestVerifyNextSequenceRecv() {
 
 func malleateHeight(height exported.Height, diff uint64) exported.Height {
 	return clienttypes.NewHeight(height.GetRevisionNumber(), height.GetRevisionHeight()+diff)
+}
+
+// TestVerifyConnectionStateDiagnostics exercises the structured proof
+// verification diagnostics of VerifyConnectionState using fixed proof
+// fixtures: a valid proof, and proofs verified against a wrong counterparty
+// prefix, a wrong commitment path and a wrong consensus root hash. It asserts
+// the failure category, that the error text never contains the full proof
+// bytes, and that a failed verification does not modify the connection state.
+func (s *KeeperTestSuite) TestVerifyConnectionStateDiagnostics() {
+	var (
+		path         *ibctesting.Path
+		connectionID string
+		height       exported.Height
+	)
+
+	cases := []struct {
+		name        string
+		malleate    func(connection *types.ConnectionEnd)
+		expCategory types.ProofFailureCategory
+		expErr      error
+	}{
+		{
+			"valid proof fixture",
+			func(connection *types.ConnectionEnd) {},
+			types.ProofFailureCategoryNone,
+			nil,
+		},
+		{
+			"wrong prefix fixture",
+			func(connection *types.ConnectionEnd) {
+				connection.Counterparty.Prefix = commitmenttypes.NewMerklePrefix([]byte("wrongprefix"))
+			},
+			types.ProofFailureCategoryPrefixMismatch,
+			types.ErrConnectionProofVerification,
+		},
+		{
+			"wrong path fixture",
+			func(connection *types.ConnectionEnd) {
+				connectionID = "connection-100"
+			},
+			types.ProofFailureCategoryPathMismatch,
+			types.ErrConnectionProofVerification,
+		},
+		{
+			"wrong root fixture",
+			func(connection *types.ConnectionEnd) {
+				// change the connection state on chainB and update the client on
+				// chainA so that the fixed proof no longer commits to the root
+				// hash of the consensus state it is verified against
+				path.EndpointB.UpdateConnection(func(c *types.ConnectionEnd) { c.State = types.TRYOPEN })
+				s.coordinator.CommitBlock(s.chainB)
+				s.Require().NoError(path.EndpointA.UpdateClient())
+				clientState, ok := path.EndpointA.GetClientState().(*ibctm.ClientState)
+				s.Require().True(ok)
+				height = clientState.LatestHeight
+			},
+			types.ProofFailureCategoryRootHashMismatch,
+			types.ErrConnectionProofVerification,
+		},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			s.SetupTest() // reset
+
+			path = ibctesting.NewPath(s.chainA, s.chainB)
+			path.SetupConnections()
+
+			// capture a fixed valid proof fixture for the connection on chainB
+			connectionKey := host.ConnectionKey(path.EndpointB.ConnectionID)
+			proof, proofHeight := s.chainB.QueryProof(connectionKey)
+
+			// reset fixture variables
+			connectionID = path.EndpointB.ConnectionID
+			height = proofHeight
+
+			connection := path.EndpointA.GetConnection()
+			expectedConnection := path.EndpointB.GetConnection()
+
+			tc.malleate(&connection)
+
+			// capture the connection state before verification
+			connectionBefore := path.EndpointA.GetConnection()
+
+			err := s.chainA.App.GetIBCKeeper().ConnectionKeeper.VerifyConnectionState(
+				s.chainA.GetContext(), connection,
+				height, proof, connectionID, expectedConnection,
+			)
+
+			// verification must never modify the connection state
+			s.Require().Equal(connectionBefore, path.EndpointA.GetConnection())
+
+			if tc.expErr == nil {
+				s.Require().NoError(err)
+				s.Require().Equal(types.ProofFailureCategoryNone, types.GetProofFailureCategory(err))
+			} else {
+				s.Require().Error(err)
+				s.Require().ErrorIs(err, tc.expErr)
+				s.Require().Equal(tc.expCategory, types.GetProofFailureCategory(err))
+
+				// the structured category must be extractable by callers
+				var pvErr *types.ProofVerificationError
+				s.Require().ErrorAs(err, &pvErr)
+				s.Require().Equal(tc.expCategory, pvErr.Category)
+				s.Require().Equal(path.EndpointA.ClientID, pvErr.ClientID)
+				s.Require().Equal(connectionID, pvErr.ConnectionID)
+
+				// the error text must not leak the full proof bytes
+				s.Require().NotContains(err.Error(), strings.ToUpper(hex.EncodeToString(proof)))
+				s.Require().NotContains(err.Error(), string(proof))
+			}
+		})
+	}
 }

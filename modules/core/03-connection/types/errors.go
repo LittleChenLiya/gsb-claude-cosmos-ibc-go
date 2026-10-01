@@ -18,4 +18,5 @@ var (
 	ErrInvalidVersion                = errorsmod.Register(SubModuleName, 9, "invalid connection version")
 	ErrVersionNegotiationFailed      = errorsmod.Register(SubModuleName, 10, "connection version negotiation failed")
 	ErrInvalidConnectionIdentifier   = errorsmod.Register(SubModuleName, 11, "invalid connection identifier")
+	ErrConnectionProofVerification   = errorsmod.Register(SubModuleName, 12, "connection proof verification failed")
 )

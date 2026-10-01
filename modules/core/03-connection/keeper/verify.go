@@ -43,7 +43,14 @@ func (k *Keeper) VerifyConnectionState(
 		0, 0, // skip delay period checks for non-packet processing verification
 		proof, merklePath, bz,
 	); err != nil {
-		return errorsmod.Wrapf(err, "failed connection state verification for client (%s)", clientID)
+		// Attach structured diagnostics so callers can distinguish prefix,
+		// path and root hash mismatches. The connection state is left
+		// unmodified and the full proof bytes are never included in the
+		// error text.
+		return types.NewProofVerificationError(
+			errorsmod.Wrapf(err, "failed connection state verification for client (%s)", clientID),
+			clientID, connectionID,
+		)
 	}
 
 	return nil
