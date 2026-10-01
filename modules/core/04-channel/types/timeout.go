@@ -62,6 +62,16 @@ func (t Timeout) ErrTimeoutNotReached(height clienttypes.Height, timestamp uint6
 	return errorsmod.Wrapf(ErrTimeoutNotReached, "current timestamp: %d, timeout timestamp %d", timestamp, t.Timestamp)
 }
 
+// TimeoutReason returns the reason for the timeout based on which timeout value elapsed.
+// It returns HEIGHT_TIMEOUT if the timeout height elapsed, otherwise TIMESTAMP_TIMEOUT.
+// This method should only be called after Elapsed returns true.
+func (t Timeout) TimeoutReason(height clienttypes.Height, timestamp uint64) TimeoutReason {
+	if t.heightElapsed(height) {
+		return HEIGHT_TIMEOUT
+	}
+	return TIMESTAMP_TIMEOUT
+}
+
 // heightElapsed returns true if the timeout height is non empty
 // and the timeout height is greater than or equal to the relative height.
 func (t Timeout) heightElapsed(height clienttypes.Height) bool {

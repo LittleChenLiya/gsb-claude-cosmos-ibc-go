@@ -22,6 +22,10 @@ import (
 // packet can no longer be executed and to allow the calling module to safely
 // perform appropriate state transitions. Its intended usage is within the
 // ante handler.
+//
+// Deprecated: use TimeoutPacketWithReason instead, which additionally returns
+// the reason for the packet timeout. This method is kept for backwards
+// compatibility and delegates to TimeoutPacketWithReason.
 func (k *Keeper) TimeoutPacket(
 	ctx sdk.Context,
 	packet types.Packet,
@@ -29,23 +33,43 @@ func (k *Keeper) TimeoutPacket(
 	proofHeight exported.Height,
 	nextSequenceRecv uint64,
 ) (string, error) {
+	channelVersion, _, err := k.TimeoutPacketWithReason(ctx, packet, proof, proofHeight, nextSequenceRecv)
+	return channelVersion, err
+}
+
+// TimeoutPacketWithReason is identical to TimeoutPacket but additionally returns
+// the reason for the packet timeout. The reason is one of:
+//   - HEIGHT_TIMEOUT: the timeout height elapsed
+//   - TIMESTAMP_TIMEOUT: the timeout timestamp elapsed
+//   - INVALID_PROOF: the timeout proof verification failed
+//
+// On proof failure (INVALID_PROOF), the packet commitment is NOT deleted so that
+// the timeout can be retried with a valid proof. The original events and error
+// codes are unchanged from TimeoutPacket.
+func (k *Keeper) TimeoutPacketWithReason(
+	ctx sdk.Context,
+	packet types.Packet,
+	proof []byte,
+	proofHeight exported.Height,
+	nextSequenceRecv uint64,
+) (string, types.TimeoutReason, error) {
 	channel, found := k.GetChannel(ctx, packet.GetSourcePort(), packet.GetSourceChannel())
 	if !found {
-		return "", errorsmod.Wrapf(
+		return "", "", errorsmod.Wrapf(
 			types.ErrChannelNotFound,
 			"port ID (%s) channel ID (%s)", packet.GetSourcePort(), packet.GetSourceChannel(),
 		)
 	}
 
 	if packet.GetDestPort() != channel.Counterparty.PortId {
-		return "", errorsmod.Wrapf(
+		return "", "", errorsmod.Wrapf(
 			types.ErrInvalidPacket,
 			"packet destination port doesn't match the counterparty's port (%s ≠ %s)", packet.GetDestPort(), channel.Counterparty.PortId,
 		)
 	}
 
 	if packet.GetDestChannel() != channel.Counterparty.ChannelId {
-		return "", errorsmod.Wrapf(
+		return "", "", errorsmod.Wrapf(
 			types.ErrInvalidPacket,
 			"packet destination channel doesn't match the counterparty's channel (%s ≠ %s)", packet.GetDestChannel(), channel.Counterparty.ChannelId,
 		)
@@ -53,7 +77,7 @@ func (k *Keeper) TimeoutPacket(
 
 	connectionEnd, found := k.connectionKeeper.GetConnection(ctx, channel.ConnectionHops[0])
 	if !found {
-		return "", errorsmod.Wrap(
+		return "", "", errorsmod.Wrap(
 			connectiontypes.ErrConnectionNotFound,
 			channel.ConnectionHops[0],
 		)
@@ -62,13 +86,16 @@ func (k *Keeper) TimeoutPacket(
 	// check that timeout height or timeout timestamp has passed on the other end
 	proofTimestamp, err := k.clientKeeper.GetClientTimestampAtHeight(ctx, connectionEnd.ClientId, proofHeight)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	timeout := types.NewTimeout(packet.GetTimeoutHeight().(clienttypes.Height), packet.GetTimeoutTimestamp())
 	if !timeout.Elapsed(proofHeight.(clienttypes.Height), proofTimestamp) {
-		return "", errorsmod.Wrap(timeout.ErrTimeoutNotReached(proofHeight.(clienttypes.Height), proofTimestamp), "packet timeout not reached")
+		return "", "", errorsmod.Wrap(timeout.ErrTimeoutNotReached(proofHeight.(clienttypes.Height), proofTimestamp), "packet timeout not reached")
 	}
+
+	// determine the timeout reason based on which timeout value elapsed
+	reason := timeout.TimeoutReason(proofHeight.(clienttypes.Height), proofTimestamp)
 
 	commitment := k.GetPacketCommitment(ctx, packet.GetSourcePort(), packet.GetSourceChannel(), packet.GetSequence())
 
@@ -78,21 +105,21 @@ func (k *Keeper) TimeoutPacket(
 		// or there is a misconfigured relayer attempting to prove a timeout
 		// for a packet never sent. Core IBC will treat this error as a no-op in order to
 		// prevent an entire relay transaction from failing and consuming unnecessary fees.
-		return "", types.ErrNoOpMsg
+		return "", "", types.ErrNoOpMsg
 	}
 
 	packetCommitment := types.CommitPacket(packet)
 
 	// verify we sent the packet and haven't cleared it out yet
 	if !bytes.Equal(commitment, packetCommitment) {
-		return "", errorsmod.Wrapf(types.ErrInvalidPacket, "packet commitment bytes are not equal: got (%v), expected (%v)", commitment, packetCommitment)
+		return "", "", errorsmod.Wrapf(types.ErrInvalidPacket, "packet commitment bytes are not equal: got (%v), expected (%v)", commitment, packetCommitment)
 	}
 
 	switch channel.Ordering {
 	case types.ORDERED:
 		// check that packet has not been received
 		if nextSequenceRecv > packet.GetSequence() {
-			return "", errorsmod.Wrapf(
+			return "", "", errorsmod.Wrapf(
 				types.ErrPacketReceived,
 				"packet already received, next sequence receive > packet sequence (%d > %d)", nextSequenceRecv, packet.GetSequence(),
 			)
@@ -113,14 +140,15 @@ func (k *Keeper) TimeoutPacket(
 	}
 
 	if err != nil {
-		return "", err
+		// proof failure: do not delete the commitment so the timeout can be retried
+		return "", types.INVALID_PROOF, err
 	}
 
 	if err = k.timeoutExecuted(ctx, channel, packet); err != nil {
-		return "", err
+		return "", reason, err
 	}
 
-	return channel.Version, nil
+	return channel.Version, reason, nil
 }
 
 // timeoutExecuted deletes the commitment send from this chain after it verifies timeout.
