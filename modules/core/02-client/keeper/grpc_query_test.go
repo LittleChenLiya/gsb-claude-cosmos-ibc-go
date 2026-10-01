@@ -5,6 +5,7 @@ package keeper_test
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -587,6 +588,128 @@ func (s *KeeperTestSuite) TestQueryClientStatus() {
 				s.Require().NoError(err)
 				s.Require().NotNil(res)
 				s.Require().Equal(tc.expStatus, res.Status)
+			} else {
+				s.Require().Error(err)
+				s.Require().ErrorIs(err, tc.expErr)
+			}
+		})
+	}
+}
+
+func (s *KeeperTestSuite) TestQueryClientFrozenState() {
+	var (
+		req               *types.QueryClientFrozenStateRequest
+		expConflictHeight types.Height
+	)
+
+	testCases := []struct {
+		msg             string
+		malleate        func()
+		expErr          error
+		expFrozen       bool
+		expFrozenHeight types.Height
+		expEvidenceType string
+	}{
+		{
+			"req is nil",
+			func() {
+				req = nil
+			},
+			status.Error(codes.InvalidArgument, "empty request"),
+			false, types.ZeroHeight(), "",
+		},
+		{
+			"invalid clientID",
+			func() {
+				req = &types.QueryClientFrozenStateRequest{}
+			},
+			status.Error(codes.InvalidArgument, "identifier cannot be blank: invalid identifier"),
+			false, types.ZeroHeight(), "",
+		},
+		{
+			"client not found",
+			func() {
+				req = &types.QueryClientFrozenStateRequest{
+					ClientId: ibctesting.InvalidID,
+				}
+			},
+			nil, false, types.ZeroHeight(), "",
+		},
+		{
+			"active client returns empty description",
+			func() {
+				path := ibctesting.NewPath(s.chainA, s.chainB)
+				path.SetupClients()
+				req = &types.QueryClientFrozenStateRequest{
+					ClientId: path.EndpointA.ClientID,
+				}
+			},
+			nil, false, types.ZeroHeight(), "",
+		},
+		{
+			"frozen client returns populated description",
+			func() {
+				path := ibctesting.NewPath(s.chainA, s.chainB)
+				path.SetupClients()
+
+				clientID := path.EndpointA.ClientID
+				clientKeeper := s.chainA.App.GetIBCKeeper().ClientKeeper
+				signer := s.chainA.SenderAccount.GetAddress().String()
+
+				// construct a fork misbehaviour: two headers at the same height with
+				// different timestamps (different commit hashes)
+				trustedHeight, ok := path.EndpointA.GetClientLatestHeight().(types.Height)
+				s.Require().True(ok)
+
+				trustedVals, ok := s.chainB.TrustedValidators[trustedHeight.RevisionHeight]
+				s.Require().True(ok)
+
+				s.Require().NoError(path.EndpointA.UpdateClient())
+
+				height, ok := path.EndpointA.GetClientLatestHeight().(types.Height)
+				s.Require().True(ok)
+
+				misbehaviour := &ibctm.Misbehaviour{
+					Header1: s.chainB.CreateTMClientHeader(s.chainB.ChainID, int64(height.RevisionHeight), trustedHeight, s.chainB.ProposedHeader.Time.Add(time.Minute), s.chainB.Vals, s.chainB.NextVals, trustedVals, s.chainB.Signers),
+					Header2: s.chainB.CreateTMClientHeader(s.chainB.ChainID, int64(height.RevisionHeight), trustedHeight, s.chainB.ProposedHeader.Time, s.chainB.Vals, s.chainB.NextVals, trustedVals, s.chainB.Signers),
+				}
+				misbehaviour.ClientId = clientID
+
+				conflictHeight := misbehaviour.Header1.GetHeight()
+				expConflictHeight = types.NewHeight(conflictHeight.GetRevisionNumber(), conflictHeight.GetRevisionHeight())
+
+				// submit the conflict update via a transaction; the client must freeze
+				msg, err := types.NewMsgUpdateClient(clientID, misbehaviour, signer)
+				s.Require().NoError(err)
+				_, err = s.chainA.SendMsgs(msg)
+				s.Require().NoError(err)
+				s.Require().Equal(exported.Frozen, clientKeeper.GetClientStatus(s.chainA.GetContext(), clientID))
+
+				req = &types.QueryClientFrozenStateRequest{
+					ClientId: clientID,
+				}
+			},
+			nil, true, ibctm.FrozenHeight, "/ibc.lightclients.tendermint.v1.Misbehaviour",
+		},
+	}
+
+	for _, tc := range testCases {
+		s.Run(fmt.Sprintf("Case %s", tc.msg), func() {
+			s.SetupTest() // reset
+
+			expConflictHeight = types.Height{}
+			tc.malleate()
+			ctx := s.chainA.GetContext()
+			queryServer := keeper.NewQueryServer(s.chainA.GetSimApp().IBCKeeper.ClientKeeper)
+			res, err := queryServer.ClientFrozenState(ctx, req)
+
+			if tc.expErr == nil {
+				s.Require().NoError(err)
+				s.Require().NotNil(res)
+				s.Require().Equal(tc.expFrozen, res.Frozen)
+				s.Require().Equal(tc.expFrozenHeight, res.FrozenHeight)
+				s.Require().Equal(expConflictHeight, res.ConflictHeight)
+				s.Require().Equal(tc.expEvidenceType, res.EvidenceType)
 			} else {
 				s.Require().Error(err)
 				s.Require().ErrorIs(err, tc.expErr)

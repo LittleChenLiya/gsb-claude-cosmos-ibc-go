@@ -185,6 +185,31 @@ type GenesisMetadata interface {
 	GetValue() []byte
 }
 
+// FrozenState is a read-only description of a client's frozen state.
+// It captures the height at which the client was frozen, the height at which
+// the conflict (misbehaviour) occurred, and the type of evidence that
+// triggered the freeze.
+type FrozenState struct {
+	// FrozenHeight is the height at which the client was frozen due to misbehaviour.
+	FrozenHeight Height
+	// ConflictHeight is the height at which the misbehaviour or conflict occurred.
+	ConflictHeight Height
+	// EvidenceType is the type of the evidence that triggered the client freeze.
+	// This is typically the proto type URL of the submitted client message.
+	EvidenceType string
+}
+
+// FrozenStateProvider is an optional interface implemented by light client modules
+// that can provide a read-only description of their frozen state. Light client
+// modules which do not implement this interface are considered unfrozen and
+// return an empty frozen state description.
+type FrozenStateProvider interface {
+	// FrozenState returns a read-only description of the client's frozen state.
+	// The boolean return value indicates whether the client is frozen. When the
+	// client is not frozen, an empty description is returned.
+	FrozenState(ctx sdk.Context, clientID string) (FrozenState, bool)
+}
+
 // String returns the string representation of a client status.
 func (s Status) String() string {
 	return string(s)

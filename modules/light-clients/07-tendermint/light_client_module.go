@@ -16,6 +16,7 @@ import (
 )
 
 var _ exported.LightClientModule = (*LightClientModule)(nil)
+var _ exported.FrozenStateProvider = (*LightClientModule)(nil)
 
 // LightClientModule implements the core IBC api.LightClientModule interface.
 type LightClientModule struct {
@@ -149,6 +150,37 @@ func (l LightClientModule) Status(ctx sdk.Context, clientID string) exported.Sta
 	}
 
 	return clientState.status(ctx, clientStore, l.cdc)
+}
+
+// FrozenState returns a read-only description of the client's frozen state.
+// It obtains the client state associated with the client identifier and reads
+// the frozen state metadata from the client store. If the client is not frozen,
+// an empty description is returned.
+func (l LightClientModule) FrozenState(ctx sdk.Context, clientID string) (exported.FrozenState, bool) {
+	clientStore := l.storeProvider.ClientStore(ctx, clientID)
+	clientState, found := getClientState(clientStore, l.cdc)
+	if !found {
+		return exported.FrozenState{}, false
+	}
+
+	if clientState.FrozenHeight.IsZero() {
+		return exported.FrozenState{}, false
+	}
+
+	conflictHeight, evidenceType, found := getFrozenMetadata(clientStore)
+	if !found {
+		// the client is frozen but no metadata was stored; return the frozen
+		// height with an empty description
+		return exported.FrozenState{
+			FrozenHeight: clientState.FrozenHeight,
+		}, true
+	}
+
+	return exported.FrozenState{
+		FrozenHeight:  clientState.FrozenHeight,
+		ConflictHeight: conflictHeight,
+		EvidenceType:   evidenceType,
+	}, true
 }
 
 // LatestHeight returns the latest height for the client state for the given client identifier.

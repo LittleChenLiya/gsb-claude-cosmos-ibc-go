@@ -8,6 +8,8 @@ import (
 
 	errorsmod "cosmossdk.io/errors"
 
+	gogoproto "github.com/cosmos/gogoproto/proto"
+
 	"github.com/cosmos/cosmos-sdk/codec"
 	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -210,10 +212,41 @@ func (cs *ClientState) pruneOldestConsensusState(ctx sdk.Context, cdc codec.Bina
 
 // UpdateStateOnMisbehaviour updates state upon misbehaviour, freezing the ClientState. This method should only be called when misbehaviour is detected
 // as it does not perform any misbehaviour checks.
-func (cs *ClientState) UpdateStateOnMisbehaviour(ctx sdk.Context, cdc codec.BinaryCodec, clientStore storetypes.KVStore, _ exported.ClientMessage) {
+func (cs *ClientState) UpdateStateOnMisbehaviour(ctx sdk.Context, cdc codec.BinaryCodec, clientStore storetypes.KVStore, clientMsg exported.ClientMessage) {
 	cs.FrozenHeight = FrozenHeight
 
 	clientStore.Set(host.ClientStateKey(), clienttypes.MustMarshalClientState(cdc, cs))
+
+	// record the frozen state metadata so that a read-only description of the
+	// client's frozen state can be queried later
+	conflictHeight := getConflictHeight(clientMsg)
+	evidenceType := getEvidenceType(clientMsg)
+	setFrozenMetadata(clientStore, conflictHeight, evidenceType)
+}
+
+// getConflictHeight returns the height at which the misbehaviour or conflict
+// occurred. For a Header message, this is the header's height. For a Misbehaviour
+// message, this is the height of the first header (which is guaranteed to be
+// greater than or equal to the second header's height). If the client message is
+// nil or of an unknown type, a zero height is returned.
+func getConflictHeight(clientMsg exported.ClientMessage) exported.Height {
+	switch msg := clientMsg.(type) {
+	case *Header:
+		return msg.GetHeight()
+	case *Misbehaviour:
+		return msg.Header1.GetHeight()
+	default:
+		return clienttypes.ZeroHeight()
+	}
+}
+
+// getEvidenceType returns the proto type URL of the evidence that triggered the
+// client freeze. If the client message is nil, an empty string is returned.
+func getEvidenceType(clientMsg exported.ClientMessage) string {
+	if clientMsg == nil {
+		return ""
+	}
+	return "/" + gogoproto.MessageName(clientMsg)
 }
 
 // checkTrustedHeader checks that consensus state matches trusted fields of Header

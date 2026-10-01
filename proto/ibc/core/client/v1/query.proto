@@ -50,6 +50,12 @@ service Query {
     option (google.api.http).get = "/ibc/core/client/v1/client_status/{client_id}";
   }
 
+  // ClientFrozenState queries the frozen state description of an IBC light client.
+  // An unfrozen client returns an empty description.
+  rpc ClientFrozenState(QueryClientFrozenStateRequest) returns (QueryClientFrozenStateResponse) {
+    option (google.api.http).get = "/ibc/core/client/v1/frozen_states/{client_id}";
+  }
+
   // ClientParams queries all parameters of the ibc client submodule.
   rpc ClientParams(QueryClientParamsRequest) returns (QueryClientParamsResponse) {
     option (google.api.http).get = "/ibc/core/client/v1/params";
@@ -189,6 +195,28 @@ message QueryClientStatusRequest {
 // method. It returns the current status of the IBC client.
 message QueryClientStatusResponse {
   string status = 1;
+}
+
+// QueryClientFrozenStateRequest is the request type for the
+// Query/ClientFrozenState RPC method.
+message QueryClientFrozenStateRequest {
+  // client unique identifier
+  string client_id = 1;
+}
+
+// QueryClientFrozenStateResponse is the response type for the
+// Query/ClientFrozenState RPC method. It returns a read-only description of the
+// client's frozen state. An unfrozen client returns an empty description
+// (frozen = false).
+message QueryClientFrozenStateResponse {
+  // whether the client is frozen
+  bool frozen = 1;
+  // the height at which the client was frozen due to misbehaviour
+  ibc.core.client.v1.Height frozen_height = 2 [(gogoproto.nullable) = false];
+  // the height at which the conflict (misbehaviour) occurred
+  ibc.core.client.v1.Height conflict_height = 3 [(gogoproto.nullable) = false];
+  // the type of evidence that triggered the client freeze
+  string evidence_type = 4;
 }
 
 // QueryClientParamsRequest is the request type for the Query/ClientParams RPC

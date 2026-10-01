@@ -435,6 +435,24 @@ func (k *Keeper) GetClientStatus(ctx sdk.Context, clientID string) exported.Stat
 	return clientModule.Status(ctx, clientID)
 }
 
+// GetClientFrozenState returns a read-only description of the client's frozen state.
+// If the client is not frozen, an empty description is returned. If the light client
+// module does not implement the FrozenStateProvider interface, an empty description
+// is returned.
+func (k *Keeper) GetClientFrozenState(ctx sdk.Context, clientID string) (exported.FrozenState, bool) {
+	clientModule, err := k.Route(ctx, clientID)
+	if err != nil {
+		return exported.FrozenState{}, false
+	}
+
+	frozenStateProvider, ok := clientModule.(exported.FrozenStateProvider)
+	if !ok {
+		return exported.FrozenState{}, false
+	}
+
+	return frozenStateProvider.FrozenState(ctx, clientID)
+}
+
 // GetClientLatestHeight returns the latest height of a client state for a given client identifier. If the client type is not in the allowed
 // clients param field, a zero value height is returned, otherwise the client state latest height is returned.
 func (k *Keeper) GetClientLatestHeight(ctx sdk.Context, clientID string) types.Height {

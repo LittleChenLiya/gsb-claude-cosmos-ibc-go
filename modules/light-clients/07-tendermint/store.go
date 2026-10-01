@@ -43,6 +43,9 @@ var (
 	KeyProcessedHeight = []byte("/processedHeight")
 	// KeyIteration stores the key mapping to consensus state key for efficient iteration
 	KeyIteration = []byte("/iterationKey")
+	// KeyFrozenMetadata is the key under which the frozen state metadata is stored
+	// in the client store when a client is frozen due to misbehaviour.
+	KeyFrozenMetadata = []byte("frozenMetadata")
 )
 
 // setClientState stores the client state
@@ -342,4 +345,30 @@ func deleteConsensusMetadata(clientStore storetypes.KVStore, height exported.Hei
 	deleteProcessedTime(clientStore, height)
 	deleteProcessedHeight(clientStore, height)
 	deleteIterationKey(clientStore, height)
+}
+
+// setFrozenMetadata stores the frozen state metadata (the conflict height and the
+// evidence type that triggered the freeze) in the client store. The metadata is
+// stored as the big-endian representation of the conflict height followed by the
+// evidence type string.
+func setFrozenMetadata(clientStore storetypes.KVStore, conflictHeight exported.Height, evidenceType string) {
+	bz := append(bigEndianHeightBytes(conflictHeight), []byte(evidenceType)...)
+	clientStore.Set(KeyFrozenMetadata, bz)
+}
+
+// getFrozenMetadata retrieves the frozen state metadata from the client store.
+// It returns the conflict height, the evidence type, and a boolean indicating
+// whether the metadata was found.
+func getFrozenMetadata(clientStore storetypes.KVStore) (exported.Height, string, bool) {
+	bz := clientStore.Get(KeyFrozenMetadata)
+	if len(bz) == 0 || len(bz) < 16 {
+		return nil, "", false
+	}
+
+	revision := binary.BigEndian.Uint64(bz[0:8])
+	height := binary.BigEndian.Uint64(bz[8:16])
+	conflictHeight := clienttypes.NewHeight(revision, height)
+	evidenceType := string(bz[16:])
+
+	return conflictHeight, evidenceType, true
 }

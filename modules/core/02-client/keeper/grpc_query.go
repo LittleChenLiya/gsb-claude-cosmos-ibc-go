@@ -265,6 +265,43 @@ func (q *queryServer) ClientStatus(goCtx context.Context, req *types.QueryClient
 	}, nil
 }
 
+// ClientFrozenState implements the Query/ClientFrozenState gRPC method.
+// It returns a read-only description of the client's frozen state. An unfrozen
+// client returns an empty description.
+func (q *queryServer) ClientFrozenState(goCtx context.Context, req *types.QueryClientFrozenStateRequest) (*types.QueryClientFrozenStateResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "empty request")
+	}
+
+	if err := host.ClientIdentifierValidator(req.ClientId); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	ctx := sdk.UnwrapSDKContext(goCtx)
+	frozenState, frozen := q.GetClientFrozenState(ctx, req.ClientId)
+
+	frozenHeight := types.ZeroHeight()
+	if frozenState.FrozenHeight != nil {
+		if h, ok := frozenState.FrozenHeight.(types.Height); ok {
+			frozenHeight = h
+		}
+	}
+
+	conflictHeight := types.ZeroHeight()
+	if frozenState.ConflictHeight != nil {
+		if h, ok := frozenState.ConflictHeight.(types.Height); ok {
+			conflictHeight = h
+		}
+	}
+
+	return &types.QueryClientFrozenStateResponse{
+		Frozen:         frozen,
+		FrozenHeight:   frozenHeight,
+		ConflictHeight: conflictHeight,
+		EvidenceType:   frozenState.EvidenceType,
+	}, nil
+}
+
 // ClientCreator implements the Query/ClientCreator gRPC method
 func (q *queryServer) ClientCreator(goCtx context.Context, req *types.QueryClientCreatorRequest) (*types.QueryClientCreatorResponse, error) {
 	if req == nil {
