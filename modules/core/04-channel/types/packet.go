@@ -4,6 +4,7 @@ package types
 
 import (
 	"crypto/sha256"
+	"fmt"
 
 	errorsmod "cosmossdk.io/errors"
 
@@ -141,4 +142,43 @@ func (p PacketId) Validate() error {
 // NewPacketID returns a new instance of PacketId
 func NewPacketID(portID, channelID string, seq uint64) PacketId {
 	return PacketId{PortId: portID, ChannelId: channelID, Sequence: seq}
+}
+
+// PacketReceiptSummary is a read-only summary of the previously recorded
+// processing result of a received packet. It is returned to callers on the
+// duplicate receive path so that they can confirm the outcome of the original
+// relay without re-triggering the application callback.
+//
+// The summary is keyed by the exact (destination port, destination channel,
+// sequence) tuple, so receipts for different sequences are never shared.
+type PacketReceiptSummary struct {
+	// Sequence is the packet sequence this summary refers to.
+	Sequence uint64
+	// DestinationPort is the destination port of the received packet.
+	DestinationPort string
+	// DestinationChannel is the destination channel of the received packet.
+	DestinationChannel string
+	// Received indicates that the packet has already been received on this
+	// channel end (a receipt exists for an UNORDERED channel, or the receive
+	// sequence has advanced past it for an ORDERED channel).
+	Received bool
+	// HasAcknowledgement indicates that a synchronous acknowledgement hash has
+	// already been written for the packet.
+	HasAcknowledgement bool
+	// AcknowledgementHash is the stored hash of the previously written
+	// acknowledgement, empty if none has been written yet (e.g. async acks).
+	AcknowledgementHash []byte
+	// Ordering is the ordering of the channel end the packet was received on.
+	Ordering Order
+	// NextSequenceRecv is the next expected receive sequence. It is meaningful
+	// for ORDERED channels and set to 0 for UNORDERED channels.
+	NextSequenceRecv uint64
+}
+
+// String returns a deterministic, human readable representation of the summary.
+func (s PacketReceiptSummary) String() string {
+	return fmt.Sprintf(
+		"PacketReceiptSummary{Sequence: %d, DestinationPort: %s, DestinationChannel: %s, Ordering: %s, Received: %t, HasAcknowledgement: %t, NextSequenceRecv: %d, AcknowledgementHash: %X}",
+		s.Sequence, s.DestinationPort, s.DestinationChannel, s.Ordering, s.Received, s.HasAcknowledgement, s.NextSequenceRecv, s.AcknowledgementHash,
+	)
 }

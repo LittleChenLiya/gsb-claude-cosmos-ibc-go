@@ -209,6 +209,11 @@ func (k *Keeper) applyReplayProtection(ctx sdk.Context, packet types.Packet, cha
 		_, found := k.GetPacketReceipt(ctx, packet.GetDestPort(), packet.GetDestChannel(), packet.GetSequence())
 		if found {
 			emitRecvPacketEvent(ctx, packet, channel)
+			// Read-only summary of the previous processing result. This performs no
+			// state writes and MUST NOT trigger the application callback: the packet
+			// has already been received, so a duplicate relay only confirms the
+			// existing receipt/acknowledgement state for the caller.
+			k.logDuplicateReceiptSummary(ctx, packet, channel)
 			// This error indicates that the packet has already been relayed. Core IBC will
 			// treat this error as a no-op in order to prevent an entire relay transaction
 			// from failing and consuming unnecessary fees.
@@ -233,6 +238,11 @@ func (k *Keeper) applyReplayProtection(ctx sdk.Context, packet types.Packet, cha
 
 		if packet.GetSequence() < nextSequenceRecv {
 			emitRecvPacketEvent(ctx, packet, channel)
+			// Read-only summary of the previous processing result. This performs no
+			// state writes and MUST NOT trigger the application callback: the packet
+			// has already been received, so a duplicate relay only confirms the
+			// existing receive sequence/acknowledgement state for the caller.
+			k.logDuplicateReceiptSummary(ctx, packet, channel)
 			// This error indicates that the packet has already been relayed. Core IBC will
 			// treat this error as a no-op in order to prevent an entire relay transaction
 			// from failing and consuming unnecessary fees.
@@ -261,6 +271,67 @@ func (k *Keeper) applyReplayProtection(ctx sdk.Context, packet types.Packet, cha
 	}
 
 	return nil
+}
+
+// GetPacketReceiptSummary returns a read-only summary of the previously recorded
+// processing result for the given packet on the receiving channel end.
+//
+// This method never triggers an application callback and never writes state. It
+// is intended to be used by callers on the duplicate receive path to confirm the
+// result of the original relay.
+//
+// The summary is scoped to the exact (destination port, destination channel,
+// sequence) tuple. Receipts for different sequences are never shared: each
+// sequence resolves its own receipt (UNORDERED) or receive-sequence position
+// (ORDERED) independently.
+func (k *Keeper) GetPacketReceiptSummary(
+	ctx sdk.Context,
+	packet types.Packet,
+	channel types.Channel,
+) types.PacketReceiptSummary {
+	portID, channelID := packet.GetDestPort(), packet.GetDestChannel()
+	sequence := packet.GetSequence()
+
+	summary := types.PacketReceiptSummary{
+		Sequence:           sequence,
+		DestinationPort:    portID,
+		DestinationChannel: channelID,
+		Ordering:           channel.Ordering,
+	}
+
+	if ackHash, found := k.GetPacketAcknowledgement(ctx, portID, channelID, sequence); found {
+		summary.HasAcknowledgement = true
+		summary.AcknowledgementHash = ackHash
+	}
+
+	switch channel.Ordering {
+	case types.UNORDERED:
+		if _, found := k.GetPacketReceipt(ctx, portID, channelID, sequence); found {
+			summary.Received = true
+		}
+
+	case types.ORDERED:
+		if nextSequenceRecv, found := k.GetNextSequenceRecv(ctx, portID, channelID); found {
+			summary.NextSequenceRecv = nextSequenceRecv
+			// any sequence strictly below nextSequenceRecv has already been received.
+			summary.Received = sequence < nextSequenceRecv
+		}
+	}
+
+	return summary
+}
+
+// logDuplicateReceiptSummary builds and logs the read-only receipt summary for a
+// duplicate receive. It performs only store reads.
+func (k *Keeper) logDuplicateReceiptSummary(ctx sdk.Context, packet types.Packet, channel types.Channel) {
+	summary := k.GetPacketReceiptSummary(ctx, packet, channel)
+	k.Logger(ctx).Info(
+		"duplicate packet received; returning existing receipt summary",
+		"sequence", strconv.FormatUint(packet.GetSequence(), 10),
+		"dst_port", packet.GetDestPort(),
+		"dst_channel", packet.GetDestChannel(),
+		"summary", summary.String(),
+	)
 }
 
 // WriteAcknowledgement writes the packet execution acknowledgement to the state,

@@ -44,6 +44,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ### Improvements
 
+* (core/04-channel) Add read-only `GetPacketReceiptSummary` and log a duplicate-receive receipt summary on the redundant receive path so callers can confirm the previous processing result. Duplicate receives remain no-ops, never re-trigger the application callback, and summaries are scoped per sequence.
 * (apps/rate-limiting) [\#8996](https://github.com/cosmos/ibc-go/pull/8996) Paginate the rate-limiting queries to avoid returning the full store contents in a single response.
 
 ### Dependencies
