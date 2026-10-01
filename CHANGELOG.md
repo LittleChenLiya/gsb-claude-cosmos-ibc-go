@@ -56,6 +56,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ### State Machine Breaking
 
+* (core/02-client) Record a read-only freeze explanation in the client store (`freezeInfo` key) when a client is frozen by a verified misbehaviour, containing the frozen height, the conflicting heights and the triggering evidence type. It is exposed via `Keeper.GetClientFreezeInfo`, which returns an empty explanation for unfrozen clients; the consensus checks performed during client updates are unchanged and the record is cleared on client recovery.
 * (apps/rate-limiting) [\#8937](https://github.com/cosmos/ibc-go/pull/8937) imp(ratelimit): use collections for pending markers.
 * (core/04-channel) [\#9033](https://github.com/cosmos/ibc-go/pull/9033) Reject in `SendPacket` a timeout height whose revision number exceeds the counterparty client's current revision number (an unreachable timeout that can never elapse). See [\#8653](https://github.com/cosmos/ibc-go/issues/8653).
 

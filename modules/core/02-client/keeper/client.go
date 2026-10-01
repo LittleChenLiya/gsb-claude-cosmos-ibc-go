@@ -65,6 +65,14 @@ func (k *Keeper) UpdateClient(ctx sdk.Context, clientID string, clientMsg export
 	if foundMisbehaviour {
 		clientModule.UpdateStateOnMisbehaviour(ctx, clientID, clientMsg)
 
+		// Record a read-only explanation of the freeze (frozen height,
+		// conflicting heights and evidence type). This does not perform any
+		// additional consensus verification; the client message was verified
+		// above and the light client module already determined misbehaviour.
+		if frozenClientState, found := k.GetClientState(ctx, clientID); found {
+			k.setClientFreezeInfo(ctx, clientID, deriveFreezeInfo(clientMsg, frozenClientState))
+		}
+
 		k.Logger(ctx).Info("client frozen due to misbehaviour", "client-id", clientID)
 
 		clientType := types.MustParseClientIdentifier(clientID)
@@ -143,6 +151,9 @@ func (k *Keeper) RecoverClient(ctx sdk.Context, subjectClientID, substituteClien
 	if err := clientModule.RecoverClient(ctx, subjectClientID, substituteClientID); err != nil {
 		return err
 	}
+
+	// the subject is active again, so any stale freeze explanation must be removed
+	k.deleteClientFreezeInfo(ctx, subjectClientID)
 
 	k.Logger(ctx).Info("client recovered", "client-id", subjectClientID)
 

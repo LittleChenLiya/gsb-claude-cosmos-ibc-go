@@ -51,6 +51,12 @@ func (cs ClientState) GetChainID() string {
 	return cs.ChainId
 }
 
+// GetFrozenHeight returns the height at which the client was frozen.
+// It returns the zero height if the client is not frozen.
+func (cs ClientState) GetFrozenHeight() clienttypes.Height {
+	return cs.FrozenHeight
+}
+
 // ClientType is tendermint.
 func (ClientState) ClientType() string {
 	return exported.Tendermint

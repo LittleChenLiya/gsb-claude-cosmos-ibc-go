@@ -45,6 +45,19 @@ func (m Misbehaviour) GetTime() time.Time {
 	return t2
 }
 
+// GetConflictingHeights returns the heights of the two conflicting headers
+// contained in the misbehaviour evidence.
+func (m Misbehaviour) GetConflictingHeights() []exported.Height {
+	heights := make([]exported.Height, 0, 2)
+	if m.Header1 != nil {
+		heights = append(heights, m.Header1.GetHeight())
+	}
+	if m.Header2 != nil {
+		heights = append(heights, m.Header2.GetHeight())
+	}
+	return heights
+}
+
 // ValidateBasic implements Misbehaviour interface
 func (m Misbehaviour) ValidateBasic() error {
 	if m.Header1 == nil {

@@ -34,6 +34,10 @@ const (
 	// KeyCreator is the key for the creator in the client-specific store
 	KeyCreator = "creator"
 
+	// KeyFreezeInfo is the key for the read-only freeze information recorded
+	// in the client-specific store when a client is frozen due to misbehaviour.
+	KeyFreezeInfo = "freezeInfo"
+
 	// AllowAllClients is the value that if set in AllowedClients param
 	// would allow any wired up light client modules to be allowed
 	AllowAllClients = "*"
@@ -102,4 +106,10 @@ func MustParseClientIdentifier(clientID string) string {
 // CreatorKey returns the key under which the client creator is stored in the client store
 func CreatorKey() []byte {
 	return []byte(KeyCreator)
+}
+
+// FreezeInfoKey returns the key under which the freeze information of a client is stored in the client store.
+// The freeze information is a read-only record written when a client is frozen by a verified misbehaviour.
+func FreezeInfoKey() []byte {
+	return []byte(KeyFreezeInfo)
 }
