@@ -14,7 +14,7 @@ type PacketHandler interface {
 		ctx sdk.Context,
 		packet channeltypes.Packet,
 		proof []byte,
-		proofHeight exported.Height) (string, error)
+		proofHeight exported.Height) (string, *channeltypes.PacketReceiptSummary, error)
 
 	WriteAcknowledgement(
 		ctx sdk.Context,

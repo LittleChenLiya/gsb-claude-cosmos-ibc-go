@@ -38,6 +38,12 @@ const (
 	AttributeKeyDstChannel       = "packet_dst_channel"
 	AttributeKeyChannelOrdering  = "packet_channel_ordering"
 	AttributeKeyConnection       = "packet_connection"
+
+	// packet receipt summary attributes (duplicate packet receive path)
+	AttributeKeyRecvAlreadyReceived  = "packet_recv_already_received"
+	AttributeKeyRecvNextSequenceRecv = "packet_recv_next_sequence_recv"
+	AttributeKeyRecvReceiptHex       = "packet_recv_receipt_hex"
+	AttributeKeyRecvAckCommitmentHex = "packet_recv_ack_commitment_hex"
 )
 
 // IBC channel events vars

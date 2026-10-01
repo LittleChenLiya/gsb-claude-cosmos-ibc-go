@@ -4,6 +4,7 @@ package keeper
 
 import (
 	"bytes"
+	"errors"
 	"strconv"
 
 	errorsmod "cosmossdk.io/errors"
@@ -114,26 +115,26 @@ func (k *Keeper) RecvPacket(
 	packet types.Packet,
 	proof []byte,
 	proofHeight exported.Height,
-) (string, error) {
+) (string, *types.PacketReceiptSummary, error) {
 	channel, found := k.GetChannel(ctx, packet.GetDestPort(), packet.GetDestChannel())
 	if !found {
-		return "", errorsmod.Wrap(types.ErrChannelNotFound, packet.GetDestChannel())
+		return "", nil, errorsmod.Wrap(types.ErrChannelNotFound, packet.GetDestChannel())
 	}
 
 	if channel.State != types.OPEN {
-		return "", errorsmod.Wrapf(types.ErrInvalidChannelState, "channel is not OPEN (got %s)", channel.State)
+		return "", nil, errorsmod.Wrapf(types.ErrInvalidChannelState, "channel is not OPEN (got %s)", channel.State)
 	}
 
 	// packet must come from the channel's counterparty
 	if packet.GetSourcePort() != channel.Counterparty.PortId {
-		return "", errorsmod.Wrapf(
+		return "", nil, errorsmod.Wrapf(
 			types.ErrInvalidPacket,
 			"packet source port doesn't match the counterparty's port (%s ≠ %s)", packet.GetSourcePort(), channel.Counterparty.PortId,
 		)
 	}
 
 	if packet.GetSourceChannel() != channel.Counterparty.ChannelId {
-		return "", errorsmod.Wrapf(
+		return "", nil, errorsmod.Wrapf(
 			types.ErrInvalidPacket,
 			"packet source channel doesn't match the counterparty's channel (%s ≠ %s)", packet.GetSourceChannel(), channel.Counterparty.ChannelId,
 		)
@@ -144,18 +145,18 @@ func (k *Keeper) RecvPacket(
 	// connection and channel must both be open
 	connectionEnd, found := k.connectionKeeper.GetConnection(ctx, channel.ConnectionHops[0])
 	if !found {
-		return "", errorsmod.Wrap(connectiontypes.ErrConnectionNotFound, channel.ConnectionHops[0])
+		return "", nil, errorsmod.Wrap(connectiontypes.ErrConnectionNotFound, channel.ConnectionHops[0])
 	}
 
 	if connectionEnd.State != connectiontypes.OPEN {
-		return "", errorsmod.Wrapf(connectiontypes.ErrInvalidConnectionState, "connection state is not OPEN (got %s)", connectionEnd.State)
+		return "", nil, errorsmod.Wrapf(connectiontypes.ErrInvalidConnectionState, "connection state is not OPEN (got %s)", connectionEnd.State)
 	}
 
 	// check if packet timed out by comparing it with the latest height of the chain
 	selfHeight, selfTimestamp := clienttypes.GetSelfHeight(ctx), uint64(ctx.BlockTime().UnixNano())
 	timeout := types.NewTimeout(packet.GetTimeoutHeight().(clienttypes.Height), packet.GetTimeoutTimestamp())
 	if timeout.Elapsed(selfHeight, selfTimestamp) {
-		return "", errorsmod.Wrap(timeout.ErrTimeoutElapsed(selfHeight, selfTimestamp), "packet timeout elapsed")
+		return "", nil, errorsmod.Wrap(timeout.ErrTimeoutElapsed(selfHeight, selfTimestamp), "packet timeout elapsed")
 	}
 
 	commitment := types.CommitPacket(packet)
@@ -166,11 +167,19 @@ func (k *Keeper) RecvPacket(
 		packet.GetSourcePort(), packet.GetSourceChannel(), packet.GetSequence(),
 		commitment,
 	); err != nil {
-		return "", errorsmod.Wrap(err, "couldn't verify counterparty packet commitment")
+		return "", nil, errorsmod.Wrap(err, "couldn't verify counterparty packet commitment")
 	}
 
 	if err := k.applyReplayProtection(ctx, packet, channel); err != nil {
-		return "", err
+		if errors.Is(err, types.ErrNoOpMsg) {
+			// DUPLICATE PACKET: the packet has already been received. Return a
+			// read-only receipt summary of the prior processing result so that
+			// the caller can confirm the outcome. The application callback must
+			// not be re-executed for a duplicate packet.
+			summary := k.GetPacketReceiptSummary(ctx, packet)
+			return "", &summary, err
+		}
+		return "", nil, err
 	}
 
 	// log that a packet has been received & executed
@@ -186,7 +195,7 @@ func (k *Keeper) RecvPacket(
 	// emit an event that the relayer can query for
 	emitRecvPacketEvent(ctx, packet, channel)
 
-	return channel.Version, nil
+	return channel.Version, nil, nil
 }
 
 // applyReplayProtection ensures a packet has not already been received

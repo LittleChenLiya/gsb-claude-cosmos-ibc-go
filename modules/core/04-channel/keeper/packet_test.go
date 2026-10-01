@@ -539,7 +539,7 @@ func (s *KeeperTestSuite) TestRecvPacket() {
 			packetKey := host.PacketCommitmentKey(packet.GetSourcePort(), packet.GetSourceChannel(), packet.GetSequence())
 			proof, proofHeight := path.EndpointA.QueryProof(packetKey)
 
-			channelVersion, err := s.chainB.App.GetIBCKeeper().ChannelKeeper.RecvPacket(s.chainB.GetContext(), packet, proof, proofHeight)
+			channelVersion, _, err := s.chainB.App.GetIBCKeeper().ChannelKeeper.RecvPacket(s.chainB.GetContext(), packet, proof, proofHeight)
 
 			if tc.expError == nil {
 				s.Require().NoError(err)

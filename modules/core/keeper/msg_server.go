@@ -4,7 +4,9 @@ package keeper
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
+	"strconv"
 
 	errorsmod "cosmossdk.io/errors"
 
@@ -431,13 +433,31 @@ func (k *Keeper) RecvPacket(goCtx context.Context, msg *channeltypes.MsgRecvPack
 	// If the packet was already received, perform a no-op
 	// Use a cached context to prevent accidental state changes
 	cacheCtx, writeFn := ctx.CacheContext()
-	channelVersion, err := k.ChannelKeeper.RecvPacket(cacheCtx, msg.Packet, msg.ProofCommitment, msg.ProofHeight)
+	channelVersion, receiptSummary, err := k.ChannelKeeper.RecvPacket(cacheCtx, msg.Packet, msg.ProofCommitment, msg.ProofHeight)
 
 	switch {
 	case err == nil:
 		writeFn()
 	case errors.Is(err, channeltypes.ErrNoOpMsg):
-		ctx.Logger().Debug("no-op on redundant relay", "port-id", msg.Packet.SourcePort, "channel-id", msg.Packet.SourceChannel)
+		// DUPLICATE PACKET: the packet has already been received. The
+		// application callback must not be re-executed. Emit the read-only
+		// receipt summary so the caller can confirm the prior processing
+		// result.
+		ctx.Logger().Debug("no-op on redundant relay", "port-id", msg.Packet.SourcePort, "channel-id", msg.Packet.SourceChannel, "receipt-summary", receiptSummary.String())
+		ctx.EventManager().EmitEvent(
+			sdk.NewEvent(
+				channeltypes.EventTypeRecvPacket,
+				sdk.NewAttribute(channeltypes.AttributeKeySequence, strconv.FormatUint(receiptSummary.Sequence, 10)),
+				sdk.NewAttribute(channeltypes.AttributeKeySrcPort, receiptSummary.SourcePort),
+				sdk.NewAttribute(channeltypes.AttributeKeySrcChannel, receiptSummary.SourceChannel),
+				sdk.NewAttribute(channeltypes.AttributeKeyDstPort, receiptSummary.DestPort),
+				sdk.NewAttribute(channeltypes.AttributeKeyDstChannel, receiptSummary.DestChannel),
+				sdk.NewAttribute(channeltypes.AttributeKeyRecvAlreadyReceived, strconv.FormatBool(receiptSummary.AlreadyReceived)),
+				sdk.NewAttribute(channeltypes.AttributeKeyRecvNextSequenceRecv, strconv.FormatUint(receiptSummary.NextSequenceRecv, 10)),
+				sdk.NewAttribute(channeltypes.AttributeKeyRecvReceiptHex, hex.EncodeToString(receiptSummary.Receipt)),
+				sdk.NewAttribute(channeltypes.AttributeKeyRecvAckCommitmentHex, hex.EncodeToString(receiptSummary.AcknowledgementCommitment)),
+			),
+		)
 		return &channeltypes.MsgRecvPacketResponse{Result: channeltypes.NOOP}, nil
 	default:
 		ctx.Logger().Error("receive packet failed", "port-id", msg.Packet.SourcePort, "channel-id", msg.Packet.SourceChannel, "error", errorsmod.Wrap(err, "receive packet verification failed"))
